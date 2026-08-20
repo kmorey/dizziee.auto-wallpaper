@@ -23,7 +23,7 @@ BarWidget {
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
   function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
-  function applyNow() { if (ready) service.applyNext() }
+  function applyNow() { if (ready) service.applyNow() }
 
   function injectPanel() {
     var target = panelLoader.item
@@ -63,6 +63,7 @@ BarWidget {
     function status(): string {
       if (!root.ready) return "service unavailable"
       return "enabled=" + root.service.enabled
+        + " schedule=" + root.service.scheduleType
         + " theme=" + root.service.currentThemeDisplay
         + " count=" + root.service.catalogPaths.length
         + " current=\"" + root.service.currentWallpaperDisplay() + "\""

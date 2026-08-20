@@ -20,6 +20,10 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var intervalOptions: Schedule.intervalOptions()
   readonly property var modeOptions: Schedule.modeOptions()
+  readonly property var scheduleTypeOptions: Schedule.scheduleTypeOptions()
+  readonly property var timeOptions: Schedule.timeOptions(15)
+  readonly property var wallpaperOptions: Schedule.wallpaperOptions(
+    root.service ? root.service.wallpaperList : [])
 
   // Square wallpaper preview geometry. Cells are exactly cellSize x cellSize
   // with a wrapping grid driven by the content width.
@@ -67,7 +71,7 @@ Panel {
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
-        if ((text === "a" || text === "A") && root.service) root.service.applyNext()
+        if ((text === "a" || text === "A") && root.service) root.service.applyNow()
         else if ((text === "e" || text === "E") && root.service)
           root.service.setEnabled(!root.service.enabled)
       }
@@ -201,10 +205,25 @@ Panel {
             fontFamily: root.fontFamily
           }
 
+          Dropdown {
+            Layout.fillWidth: true
+            label: "Schedule"
+            value: root.service ? root.service.scheduleType : Schedule.SCHEDULE_INTERVAL
+            options: root.scheduleTypeOptions
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onChanged: function(value) {
+              if (root.service) root.service.updateSchedule({ scheduleType: value })
+            }
+          }
+
           Toggle {
             Layout.fillWidth: true
             label: "Automatic switching"
-            description: "Cycles the active theme's wallpapers on an interval."
+            description: root.service
+              && root.service.scheduleType === Schedule.SCHEDULE_DAILY
+                ? "Uses the selected wallpaper at each daily boundary."
+                : "Cycles the active theme's wallpapers on an interval."
             checked: root.service ? root.service.enabled : false
             foreground: root.foreground
             accent: Color.accent
@@ -216,6 +235,8 @@ Panel {
           RowLayout {
             Layout.fillWidth: true
             spacing: Style.space(8)
+            visible: !root.service
+              || root.service.scheduleType === Schedule.SCHEDULE_INTERVAL
 
             Dropdown {
               Layout.fillWidth: true
@@ -242,9 +263,73 @@ Panel {
             }
           }
 
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(8)
+            visible: root.service
+              && root.service.scheduleType === Schedule.SCHEDULE_DAILY
+
+            Dropdown {
+              Layout.fillWidth: true
+              label: "Day starts"
+              value: root.service ? String(root.service.dayStart) : "420"
+              options: root.timeOptions
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(value) {
+                if (root.service) root.service.updateSchedule({ dayStart: Number(value) })
+              }
+            }
+
+            Dropdown {
+              Layout.fillWidth: true
+              label: "Day wallpaper"
+              value: root.service ? root.service.dayWallpaper : ""
+              options: root.wallpaperOptions
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(value) {
+                if (root.service) root.service.updateSchedule({ dayWallpaper: value })
+              }
+            }
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(8)
+            visible: root.service
+              && root.service.scheduleType === Schedule.SCHEDULE_DAILY
+
+            Dropdown {
+              Layout.fillWidth: true
+              label: "Night starts"
+              value: root.service ? String(root.service.nightStart) : "1140"
+              options: root.timeOptions
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(value) {
+                if (root.service) root.service.updateSchedule({ nightStart: Number(value) })
+              }
+            }
+
+            Dropdown {
+              Layout.fillWidth: true
+              label: "Night wallpaper"
+              value: root.service ? root.service.nightWallpaper : ""
+              options: root.wallpaperOptions
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onChanged: function(value) {
+                if (root.service) root.service.updateSchedule({ nightWallpaper: value })
+              }
+            }
+          }
+
           Button {
             Layout.fillWidth: true
-            text: root.service && root.service.busy ? "Applying…" : "Apply next wallpaper now"
+            text: root.service && root.service.busy ? "Applying…"
+              : (root.service && root.service.scheduleType === Schedule.SCHEDULE_DAILY
+                  ? "Apply scheduled wallpaper now" : "Apply next wallpaper now")
             iconText: "󰑐"
             bordered: true
             focusable: true
@@ -252,7 +337,7 @@ Panel {
             foreground: root.foreground
             accent: Color.accent
             fontFamily: root.fontFamily
-            onClicked: if (root.service) root.service.applyNext()
+            onClicked: if (root.service) root.service.applyNow()
           }
 
           PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
@@ -271,10 +356,12 @@ Panel {
 
           Text {
             Layout.fillWidth: true
-            text: "Manual choices and scheduled changes share the same rotation. "
-              + (root.service && root.service.shuffle
-                  ? "Shuffle plays every wallpaper once before repeating."
-                  : "Sequential order advances by one wallpaper each interval.")
+            text: root.service && root.service.scheduleType === Schedule.SCHEDULE_DAILY
+              ? "Manual choices remain active until the next day or night boundary."
+              : "Manual choices and scheduled changes share the same rotation. "
+                + (root.service && root.service.shuffle
+                    ? "Shuffle plays every wallpaper once before repeating."
+                    : "Sequential order advances by one wallpaper each interval.")
             textFormat: Text.PlainText
             color: root.dim
             font.family: root.fontFamily
@@ -286,4 +373,3 @@ Panel {
     }
   }
 }
-

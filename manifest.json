@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Dizziee",
   "license": "MIT",
-  "description": "Preview the active theme's wallpapers and automatically cycle or shuffle them on a schedule.",
+  "description": "Preview the active theme's wallpapers and switch them on an interval or daily schedule.",
   "kinds": [
     "service",
     "bar-widget"
@@ -16,14 +16,19 @@
   },
   "barWidget": {
     "displayName": "Auto Wallpaper",
-    "description": "Preview and automatically cycle the active theme's wallpapers.",
+    "description": "Preview and automatically schedule the active theme's wallpapers.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "enabled": true,
+      "scheduleType": "interval",
       "intervalMinutes": 30,
-      "mode": "sequential"
+      "mode": "sequential",
+      "dayWallpaper": "",
+      "nightWallpaper": "",
+      "dayStart": 420,
+      "nightStart": 1140
     },
     "schema": [
       {
@@ -32,6 +37,13 @@
         "label": "Automatic switching",
         "description": "Start cycling wallpapers automatically.",
         "defaultValue": true
+      },
+      {
+        "key": "scheduleType",
+        "type": "enum",
+        "label": "Schedule",
+        "options": ["interval", "daily"],
+        "defaultValue": "interval"
       },
       {
         "key": "intervalMinutes",

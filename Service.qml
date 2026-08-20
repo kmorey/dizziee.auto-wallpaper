@@ -14,18 +14,22 @@ Item {
   readonly property string catalogScriptPath: decodeURIComponent(
     String(Qt.resolvedUrl("WallpaperCatalog.sh")).replace(/^file:\/\//, ""))
 
-  // Watched config (mirrors Schedule.DEFAULTS). `enabled` and `intervalMinutes`
-  // are literal so the shipped defaults (on, 30-min) always apply for fresh
-  // installs and aren't lost to a stale cached Schedule library or a
-  // theme-change write that runs before the config file has loaded.
+  // Watched config (mirrors Schedule.DEFAULTS). Core defaults are literal so
+  // fresh installs work even if a theme event arrives before config loading.
   property bool loaded: false
   property bool enabled: true
+  property string scheduleType: Schedule.DEFAULTS.scheduleType
   property int intervalMinutes: 30
   property string mode: Schedule.DEFAULTS.mode
   property int lastChangeEpoch: Schedule.DEFAULTS.lastChangeEpoch
   property var cycle: []
   property int cycleIndex: 0
   property string cycleTheme: ""
+  property string dayWallpaper: ""
+  property string nightWallpaper: ""
+  property int dayStart: Schedule.DEFAULTS.dayStart
+  property int nightStart: Schedule.DEFAULTS.nightStart
+  property string lastHandledBoundary: ""
 
   // Live theme + wallpaper state.
   property string currentTheme: ""
@@ -34,11 +38,15 @@ Item {
   property var wallpaperList: []
   property string currentWallpaper: ""
   property int nowEpoch: 0
+  property bool catalogReady: false
+  property bool currentReady: false
 
   // Action state.
   property bool busy: false
   property string pendingWallpaper: ""
   property var pendingNext: null
+  property string pendingBoundaryToken: ""
+  property string pendingScheduleType: ""
   property string lastError: ""
   property string lastAction: ""
 
@@ -47,12 +55,18 @@ Item {
   function currentConfig() {
     return {
       enabled: root.enabled,
+      scheduleType: root.scheduleType,
       intervalMinutes: root.intervalMinutes,
       mode: root.mode,
       lastChangeEpoch: root.lastChangeEpoch,
       cycle: root.cycle,
       cycleIndex: root.cycleIndex,
-      cycleTheme: root.cycleTheme
+      cycleTheme: root.cycleTheme,
+      dayWallpaper: root.dayWallpaper,
+      nightWallpaper: root.nightWallpaper,
+      dayStart: root.dayStart,
+      nightStart: root.nightStart,
+      lastHandledBoundary: root.lastHandledBoundary
     }
   }
 
@@ -69,14 +83,21 @@ Item {
     // A brand-new config has lastChangeEpoch 0; without this, the very first
     // load would be "due" immediately and switch the wallpaper right after
     // install. Start the clock now so the first change waits one full interval.
-    if (config.enabled && config.lastChangeEpoch <= 0) config.lastChangeEpoch = Date.now()
+    if (config.enabled && config.scheduleType === Schedule.SCHEDULE_INTERVAL
+        && config.lastChangeEpoch <= 0) config.lastChangeEpoch = Date.now()
     root.enabled = config.enabled
+    root.scheduleType = config.scheduleType
     root.intervalMinutes = config.intervalMinutes
     root.mode = config.mode
     root.lastChangeEpoch = config.lastChangeEpoch
     root.cycle = config.cycle
     root.cycleIndex = config.cycleIndex
     root.cycleTheme = config.cycleTheme
+    root.dayWallpaper = config.dayWallpaper
+    root.nightWallpaper = config.nightWallpaper
+    root.dayStart = config.dayStart
+    root.nightStart = config.nightStart
+    root.lastHandledBoundary = config.lastHandledBoundary
     root.loaded = true
     root.nowEpoch = Date.now()
     Qt.callLater(root.reconcile)
@@ -92,14 +113,33 @@ Item {
   }
 
   function setEnabled(value) {
-    root.saveConfig({ enabled: value === true })
-    if (value === true) Qt.callLater(root.applyNext)
+    var on = value === true
+    var patch = { enabled: on }
+    if (on && root.scheduleType === Schedule.SCHEDULE_DAILY)
+      patch.lastHandledBoundary = ""
+    root.saveConfig(patch)
+    if (on) Qt.callLater(root.applyNow)
     else root.lastAction = "Automatic switching disabled"
   }
 
   function updateSchedule(patch) {
-    root.saveConfig(patch)
+    var next = {}
+    for (var key in patch) next[key] = patch[key]
+    var targetType = "scheduleType" in patch
+      ? Schedule.scheduleType(patch.scheduleType) : root.scheduleType
+    if (targetType === Schedule.SCHEDULE_DAILY
+        && (targetType !== root.scheduleType
+          || "dayWallpaper" in patch
+          || "nightWallpaper" in patch
+          || "dayStart" in patch
+          || "nightStart" in patch))
+      next.lastHandledBoundary = ""
+    if (targetType === Schedule.SCHEDULE_INTERVAL && targetType !== root.scheduleType)
+      next.lastChangeEpoch = Date.now()
+    root.saveConfig(next)
     root.lastAction = "Schedule saved"
+    root.lastError = ""
+    Qt.callLater(root.reconcile)
   }
 
   // Cheap vs. expensive listing. The default path only reads wallpaper
@@ -127,6 +167,8 @@ Item {
 
   function nextText() {
     if (!root.enabled) return "Automatic switching is off"
+    if (root.scheduleType === Schedule.SCHEDULE_DAILY)
+      return Schedule.nextSwitchText(new Date(root.nowEpoch || Date.now()), root.currentConfig())
     var target = root.peekNext()
     if (!target) return "No other wallpaper to show"
     var minutes = Schedule.minutesUntil(root.currentConfig(), root.nowEpoch)
@@ -138,7 +180,13 @@ Item {
     return "Theme: " + root.currentThemeDisplay
       + " · " + root.catalogPaths.length + " wallpaper"
       + (root.catalogPaths.length === 1 ? "" : "s") + " · "
-      + Schedule.modeLabel(root.mode)
+      + (root.scheduleType === Schedule.SCHEDULE_DAILY
+          ? "Daily times" : Schedule.modeLabel(root.mode))
+  }
+
+  function applyNow() {
+    if (root.scheduleType === Schedule.SCHEDULE_DAILY) root.applyDaily(true)
+    else root.applyNext()
   }
 
   function applyNext() {
@@ -157,10 +205,39 @@ Item {
 
   function setWallpaper(path) {
     if (root.busy || !path) return
-    root.switchTo(path, null)
+    var token = root.scheduleType === Schedule.SCHEDULE_DAILY
+      ? Schedule.boundaryToken(new Date(), root.currentConfig()) : ""
+    root.switchTo(path, null, token)
   }
 
-  function switchTo(path, nextResult) {
+  function applyDaily(force) {
+    if (root.busy || !root.catalogReady || !root.currentReady) return
+    var now = new Date(root.nowEpoch || Date.now())
+    var config = root.currentConfig()
+    var token = Schedule.boundaryToken(now, config)
+    if (!force && token === config.lastHandledBoundary) return
+
+    var target = Schedule.desiredWallpaper(now, config)
+    if (!target) {
+      root.lastAction = "Choose day and night wallpapers"
+      root.lastError = ""
+      return
+    }
+    if (root.catalogPaths.indexOf(target) < 0) {
+      root.lastError = "The scheduled wallpaper is not available in "
+        + root.currentThemeDisplay + ". Choose another wallpaper."
+      return
+    }
+    if (target === root.currentWallpaper) {
+      root.saveConfig({ lastHandledBoundary: token })
+      root.lastAction = "Scheduled wallpaper already active"
+      root.lastError = ""
+      return
+    }
+    root.switchTo(target, null, token)
+  }
+
+  function switchTo(path, nextResult, boundaryToken) {
     var target = String(path || "").trim()
     if (!target) {
       root.lastError = "No wallpaper selected."
@@ -168,6 +245,8 @@ Item {
     }
     root.pendingWallpaper = target
     root.pendingNext = nextResult
+    root.pendingBoundaryToken = boundaryToken || ""
+    root.pendingScheduleType = root.scheduleType
     root.lastError = ""
     setProc.command = ["omarchy-theme-bg-set", target]
     root.busy = true
@@ -178,23 +257,35 @@ Item {
     if (!root.loaded || root.busy) return
     root.nowEpoch = Date.now()
     if (!root.enabled) return
-    if (Schedule.isDue(root.currentConfig(), root.nowEpoch)) root.applyNext()
+    if (root.scheduleType === Schedule.SCHEDULE_DAILY) root.applyDaily(false)
+    else if (Schedule.isDue(root.currentConfig(), root.nowEpoch)) root.applyNext()
   }
   function onThemeChanged(slug) {
     var theme = String(slug || "").trim()
+    var previous = root.currentTheme
     root.currentTheme = theme
     root.currentThemeDisplay = Schedule.wallpaperName(theme) || "Unknown"
+    root.catalogReady = false
+    root.catalogPaths = []
+    root.wallpaperList = []
+    root.currentReady = false
+    root.updateCurrent()
+    root.refreshCatalog(true)
     // Don't persist on a theme event that races ahead of the config file
     // loading; otherwise in-memory defaults could be written out first and
     // appear to "disable" (or otherwise clobber) saved settings.
     if (!root.loaded) return
-    // New theme, new wallpaper set: let the user see it before any scheduled
-    // switch, and let pickNext rebuild the shuffle cycle on the next change.
-    root.saveConfig({ lastChangeEpoch: Date.now(), cycle: [], cycleTheme: "" })
+    if (!previous || previous === theme) return
+    // New theme, new wallpaper set: let interval mode wait before switching,
+    // and let pickNext rebuild the shuffle cycle on the next change. Daily
+    // selections are validated against the refreshed catalog before use.
+    root.saveConfig({
+      lastChangeEpoch: Date.now(),
+      cycle: [],
+      cycleTheme: "",
+      lastHandledBoundary: ""
+    })
     root.lastAction = "Theme changed to " + root.currentThemeDisplay
-    // Warm thumbnails too: if the panel is open while the theme changes, the
-    // grid must not fall back to full-resolution previews.
-    root.refreshCatalog(true)
   }
 
   function onSetExited(exitCode) {
@@ -202,13 +293,21 @@ Item {
     var applied = root.pendingWallpaper
     if (exitCode === 0) {
       root.currentWallpaper = applied
-      // Start the next schedule interval and keep the shuffle cycle aligned
-      // with whichever wallpaper we just showed.
-      var next = root.pendingNext
-      var patch = { lastChangeEpoch: Date.now(), cycleTheme: root.currentTheme }
-      if (next) {
-        patch.cycle = next.cycle
-        patch.cycleIndex = next.cycleIndex
+      var patch
+      if (root.pendingScheduleType === Schedule.SCHEDULE_DAILY) {
+        patch = {
+          lastHandledBoundary: root.pendingBoundaryToken
+            || Schedule.boundaryToken(new Date(), root.currentConfig())
+        }
+      } else {
+        // Start the next interval and keep the shuffle cycle aligned with
+        // whichever wallpaper we just showed.
+        var next = root.pendingNext
+        patch = { lastChangeEpoch: Date.now(), cycleTheme: root.currentTheme }
+        if (next) {
+          patch.cycle = next.cycle
+          patch.cycleIndex = next.cycleIndex
+        }
       }
       root.saveConfig(patch)
       if (!root.currentProc.running) root.currentProc.running = true
@@ -219,6 +318,8 @@ Item {
     }
     root.pendingWallpaper = ""
     root.pendingNext = null
+    root.pendingBoundaryToken = ""
+    root.pendingScheduleType = ""
   }
 
   FileView {
@@ -283,6 +384,7 @@ Item {
       }
       root.catalogPaths = paths
       root.wallpaperList = list
+      root.catalogReady = true
       Qt.callLater(root.reconcile)
     }
   }
@@ -295,6 +397,8 @@ Item {
       onStreamFinished: {
         var path = String(text || "").trim()
         root.currentWallpaper = path !== root.currentWallpaper ? path : root.currentWallpaper
+        root.currentReady = true
+        Qt.callLater(root.reconcile)
       }
     }
   }
@@ -325,4 +429,3 @@ Item {
     root.refreshCatalog()
   }
 }
-
