@@ -25,10 +25,7 @@
       "scheduleType": "interval",
       "intervalMinutes": 30,
       "mode": "sequential",
-      "dayWallpaper": "",
-      "nightWallpaper": "",
-      "dayStart": 420,
-      "nightStart": 1140
+      "dailyEntries": []
     },
     "schema": [
       {

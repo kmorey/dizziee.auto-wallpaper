@@ -25,10 +25,7 @@ Item {
   property var cycle: []
   property int cycleIndex: 0
   property string cycleTheme: ""
-  property string dayWallpaper: ""
-  property string nightWallpaper: ""
-  property int dayStart: Schedule.DEFAULTS.dayStart
-  property int nightStart: Schedule.DEFAULTS.nightStart
+  property var dailyEntries: []
   property string lastHandledBoundary: ""
 
   // Live theme + wallpaper state.
@@ -62,10 +59,7 @@ Item {
       cycle: root.cycle,
       cycleIndex: root.cycleIndex,
       cycleTheme: root.cycleTheme,
-      dayWallpaper: root.dayWallpaper,
-      nightWallpaper: root.nightWallpaper,
-      dayStart: root.dayStart,
-      nightStart: root.nightStart,
+      dailyEntries: root.dailyEntries,
       lastHandledBoundary: root.lastHandledBoundary
     }
   }
@@ -93,10 +87,7 @@ Item {
     root.cycle = config.cycle
     root.cycleIndex = config.cycleIndex
     root.cycleTheme = config.cycleTheme
-    root.dayWallpaper = config.dayWallpaper
-    root.nightWallpaper = config.nightWallpaper
-    root.dayStart = config.dayStart
-    root.nightStart = config.nightStart
+    root.dailyEntries = config.dailyEntries
     root.lastHandledBoundary = config.lastHandledBoundary
     root.loaded = true
     root.nowEpoch = Date.now()
@@ -129,10 +120,7 @@ Item {
       ? Schedule.scheduleType(patch.scheduleType) : root.scheduleType
     if (targetType === Schedule.SCHEDULE_DAILY
         && (targetType !== root.scheduleType
-          || "dayWallpaper" in patch
-          || "nightWallpaper" in patch
-          || "dayStart" in patch
-          || "nightStart" in patch))
+          || "dailyEntries" in patch))
       next.lastHandledBoundary = ""
     if (targetType === Schedule.SCHEDULE_INTERVAL && targetType !== root.scheduleType)
       next.lastChangeEpoch = Date.now()
@@ -140,6 +128,48 @@ Item {
     root.lastAction = "Schedule saved"
     root.lastError = ""
     Qt.callLater(root.reconcile)
+  }
+
+  function saveDailyEntry(index, time, wallpaper) {
+    var at = Schedule.minute(time, -1)
+    var path = Schedule.wallpaperPath(wallpaper)
+    if (at < 0) {
+      root.lastError = "Enter a valid hour and minute."
+      return false
+    }
+    if (!path) {
+      root.lastError = "Choose a wallpaper for this time."
+      return false
+    }
+    if (root.catalogPaths.indexOf(path) < 0) {
+      root.lastError = "Choose a wallpaper from the active theme."
+      return false
+    }
+
+    var targetIndex = Schedule.integer(index, -1)
+    var entries = root.dailyEntries.slice()
+    for (var i = 0; i < entries.length; i++) {
+      if (i !== targetIndex && entries[i].time === at) {
+        root.lastError = "A schedule already exists at " + Schedule.clockLabel(at) + "."
+        return false
+      }
+    }
+
+    var entry = { time: at, wallpaper: path }
+    if (targetIndex >= 0 && targetIndex < entries.length) entries[targetIndex] = entry
+    else entries.push(entry)
+    root.updateSchedule({ dailyEntries: entries })
+    root.lastAction = "Schedule time saved"
+    return true
+  }
+
+  function removeDailyEntry(index) {
+    var targetIndex = Schedule.integer(index, -1)
+    if (targetIndex < 0 || targetIndex >= root.dailyEntries.length) return
+    var entries = root.dailyEntries.slice()
+    entries.splice(targetIndex, 1)
+    root.updateSchedule({ dailyEntries: entries })
+    root.lastAction = "Schedule time removed"
   }
 
   // Cheap vs. expensive listing. The default path only reads wallpaper
@@ -214,15 +244,14 @@ Item {
     if (root.busy || !root.catalogReady || !root.currentReady) return
     var now = new Date(root.nowEpoch || Date.now())
     var config = root.currentConfig()
-    var token = Schedule.boundaryToken(now, config)
-    if (!force && token === config.lastHandledBoundary) return
-
     var target = Schedule.desiredWallpaper(now, config)
     if (!target) {
-      root.lastAction = "Choose day and night wallpapers"
+      root.lastAction = "Add at least one daily schedule time"
       root.lastError = ""
       return
     }
+    var token = Schedule.boundaryToken(now, config)
+    if (!force && token === config.lastHandledBoundary) return
     if (root.catalogPaths.indexOf(target) < 0) {
       root.lastError = "The scheduled wallpaper is not available in "
         + root.currentThemeDisplay + ". Choose another wallpaper."

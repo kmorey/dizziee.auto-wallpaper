@@ -9,17 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Fixed daily scheduling with independent day and night wallpapers and
-  configurable 15-minute boundaries.
+- Flexible daily scheduling with any number of exact hour/minute wallpaper
+  entries.
+- A scrollable thumbnail picker for choosing each scheduled wallpaper.
 - Local-time overnight handling and catch-up after sleep or shell restart.
-- Daily-mode manual overrides that remain active until the next boundary.
-- Unit coverage for fixed daily schedule normalization, boundaries, overnight
-  periods, and next-switch labels.
+- Daily-mode manual overrides that remain active until the next scheduled time.
+- Automatic migration from the earlier fixed day/night configuration.
+- Unit coverage for daily-entry normalization, migration, boundaries, overnight
+  wrapping, and next-switch labels.
 
 ### Changed
 
-- The schedule panel now switches between interval rotation and daily times
-  without changing existing interval configurations.
+- The schedule panel switches between interval rotation and flexible daily
+  times without changing existing interval configurations.
 
 ## [1.0.0] - 2026-08-15
 

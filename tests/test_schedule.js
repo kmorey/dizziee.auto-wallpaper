@@ -36,13 +36,17 @@ function differs(label, left, right) {
 
 const dayPath = "/themes/nord/backgrounds/morning-blue.jpg";
 const nightPath = "/themes/nord/backgrounds/star-field.png";
+const eveningPath = "/themes/nord/backgrounds/sunset.jpg";
+const morningPath = "/themes/nord/backgrounds/sunrise.jpg";
 const daily = Schedule.normalize({
   enabled: true,
   scheduleType: "daily",
-  dayWallpaper: dayPath,
-  nightWallpaper: nightPath,
-  dayStart: 420,
-  nightStart: 1140
+  dailyEntries: [
+    { time: 1320, wallpaper: nightPath },
+    { time: 360, wallpaper: morningPath },
+    { time: 1080, wallpaper: eveningPath },
+    { time: 600, wallpaper: dayPath }
+  ]
 });
 
 eq("legacy configs retain interval behavior",
@@ -52,73 +56,86 @@ eq("daily mode survives normalization", daily.scheduleType, Schedule.SCHEDULE_DA
 eq("unknown schedule mode falls back to interval",
   Schedule.normalize({ scheduleType: "sunrise" }).scheduleType,
   Schedule.SCHEDULE_INTERVAL);
-eq("invalid daily times use defaults",
-  [Schedule.normalize({ dayStart: -1, nightStart: "late" }).dayStart,
-    Schedule.normalize({ dayStart: -1, nightStart: "late" }).nightStart],
-  [420, 1140]);
-eq("equal boundaries are separated",
-  Schedule.normalize({ dayStart: 60, nightStart: 60 }).nightStart, 780);
-eq("time options cover a day in quarter hours", Schedule.timeOptions(15).length, 96);
+eq("daily entries are sorted by time", daily.dailyEntries.map(entry => entry.time),
+  [360, 600, 1080, 1320]);
+eq("duplicate times keep the latest valid entry",
+  Schedule.normalize({ dailyEntries: [
+    { time: 60, wallpaper: dayPath },
+    { time: 60, wallpaper: nightPath },
+    { time: -1, wallpaper: eveningPath },
+    { time: 120, wallpaper: "" }
+  ] }).dailyEntries,
+  [{ time: 60, wallpaper: nightPath }]);
+eq("legacy day and night settings migrate to entries",
+  Schedule.normalize({
+    dayWallpaper: dayPath,
+    nightWallpaper: nightPath,
+    dayStart: 420,
+    nightStart: 1140
+  }).dailyEntries,
+  [{ time: 420, wallpaper: dayPath }, { time: 1140, wallpaper: nightPath }]);
 eq("time labels are zero padded", Schedule.timeLabel(65), "01:05");
+eq("midnight has a twelve-hour clock label", Schedule.clockLabel(0), "12:00 AM");
+eq("afternoon has a twelve-hour clock label", Schedule.clockLabel(810), "1:30 PM");
 
-eq("day begins inclusively",
-  Schedule.periodAt(new Date(2026, 7, 12, 7, 0), daily), "day");
+eq("pre-morning hours use the previous night's wallpaper",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 5, 59), daily), nightPath);
+eq("morning begins inclusively",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 6, 0), daily), morningPath);
+eq("daytime begins inclusively",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 10, 0), daily), dayPath);
+eq("evening begins inclusively",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 18, 0), daily), eveningPath);
 eq("night begins inclusively",
-  Schedule.periodAt(new Date(2026, 7, 12, 19, 0), daily), "night");
-eq("day wallpaper is selected",
-  Schedule.desiredWallpaper(new Date(2026, 7, 12, 12, 0), daily), dayPath);
-eq("night wallpaper is selected",
-  Schedule.desiredWallpaper(new Date(2026, 7, 12, 23, 0), daily), nightPath);
-eq("day boundary token",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 22, 0), daily), nightPath);
+eq("morning boundary token",
   Schedule.boundaryToken(new Date(2026, 7, 12, 8, 0), daily),
-  "2026-08-12@day@420");
-eq("pre-dawn night uses previous boundary",
+  "2026-08-12@360");
+eq("pre-morning token uses previous night's date",
   Schedule.boundaryToken(new Date(2026, 7, 12, 2, 0), daily),
-  "2026-08-11@night@1140");
-eq("one night keeps its boundary across midnight",
+  "2026-08-11@1320");
+eq("one scheduled period keeps its boundary across midnight",
   Schedule.boundaryToken(new Date(2026, 7, 12, 23, 0), daily),
   Schedule.boundaryToken(new Date(2026, 7, 13, 2, 0), daily));
 differs("consecutive nights have different boundaries",
   Schedule.boundaryToken(new Date(2026, 7, 12, 23, 0), daily),
   Schedule.boundaryToken(new Date(2026, 7, 13, 23, 0), daily));
-eq("next night boundary",
-  Schedule.nextBoundary(new Date(2026, 7, 12, 12, 0), daily),
-  new Date(2026, 7, 12, 19, 0));
-eq("next day boundary",
+eq("next same-day boundary",
+  Schedule.nextBoundary(new Date(2026, 7, 12, 9, 0), daily),
+  new Date(2026, 7, 12, 10, 0));
+eq("next-day boundary wraps after the final entry",
   Schedule.nextBoundary(new Date(2026, 7, 12, 23, 0), daily),
-  new Date(2026, 7, 13, 7, 0));
-eq("next switch names tonight's wallpaper",
-  Schedule.nextSwitchText(new Date(2026, 7, 12, 12, 0), daily),
-  "Today at 19:00 · Star Field");
-eq("next switch names tomorrow's wallpaper",
+  new Date(2026, 7, 13, 6, 0));
+eq("next switch names the upcoming wallpaper",
+  Schedule.nextSwitchText(new Date(2026, 7, 12, 9, 0), daily),
+  "Today at 10:00 AM · Morning Blue");
+eq("next switch wraps to tomorrow",
   Schedule.nextSwitchText(new Date(2026, 7, 12, 23, 0), daily),
-  "Tomorrow at 07:00 · Morning Blue");
-
-const overnight = Schedule.normalize({
-  scheduleType: "daily",
-  dayWallpaper: dayPath,
-  nightWallpaper: nightPath,
-  dayStart: 1200,
-  nightStart: 360
-});
-eq("overnight day before midnight",
-  Schedule.periodAt(new Date(2026, 7, 12, 23, 0), overnight), "day");
-eq("overnight day after midnight",
-  Schedule.periodAt(new Date(2026, 7, 13, 2, 0), overnight), "day");
-eq("overnight night period",
-  Schedule.periodAt(new Date(2026, 7, 13, 10, 0), overnight), "night");
-eq("overnight token crosses the date boundary",
-  Schedule.boundaryToken(new Date(2026, 7, 13, 2, 0), overnight),
-  "2026-08-12@day@1200");
+  "Tomorrow at 6:00 AM · Sunrise");
 
 eq("empty daily selections have actionable status",
   Schedule.nextSwitchText(new Date(2026, 7, 12, 12, 0),
     Schedule.normalize({ scheduleType: "daily", enabled: true })),
-  "Choose day and night wallpapers");
-eq("wallpaper options include a prompt and names",
-  Schedule.wallpaperOptions([{ path: dayPath, name: "Morning" }]),
-  [{ value: "", label: "Choose wallpaper" },
-    { value: dayPath, label: "Morning" }]);
+  "Add a daily schedule time");
+eq("no entries have no active wallpaper",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 12, 0), {}), "");
+eq("no entries have no next boundary",
+  Schedule.nextBoundary(new Date(2026, 7, 12, 12, 0), {}), null);
+
+const exactMinute = Schedule.normalize({
+  scheduleType: "daily",
+  dailyEntries: [
+    { time: 367, wallpaper: morningPath },
+    { time: 1322, wallpaper: nightPath }
+  ]
+});
+eq("daily entries support arbitrary minutes before a boundary",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 6, 6), exactMinute), nightPath);
+eq("daily entries switch on an arbitrary minute",
+  Schedule.desiredWallpaper(new Date(2026, 7, 12, 6, 7), exactMinute), morningPath);
+eq("next-switch labels preserve arbitrary minutes",
+  Schedule.nextSwitchText(new Date(2026, 7, 12, 6, 6), exactMinute),
+  "Today at 6:07 AM · Sunrise");
 
 const interval = Schedule.normalize({
   enabled: true,

@@ -21,9 +21,14 @@ Panel {
   readonly property var intervalOptions: Schedule.intervalOptions()
   readonly property var modeOptions: Schedule.modeOptions()
   readonly property var scheduleTypeOptions: Schedule.scheduleTypeOptions()
-  readonly property var timeOptions: Schedule.timeOptions(15)
-  readonly property var wallpaperOptions: Schedule.wallpaperOptions(
-    root.service ? root.service.wallpaperList : [])
+  property bool scheduleEditorOpen: false
+  property int editingScheduleIndex: -1
+  property int draftHour: 8
+  property int draftMinute: 0
+  property string draftPeriod: "AM"
+  property string draftWallpaper: ""
+  property bool wallpaperPickerOpen: false
+  readonly property var draftWallpaperEntry: root.wallpaperForPath(root.draftWallpaper)
 
   // Square wallpaper preview geometry. Cells are exactly cellSize x cellSize
   // with a wrapping grid driven by the content width.
@@ -46,8 +51,64 @@ Panel {
     controller.show()
   }
 
-  function close() { controller.hide() }
+  function close() {
+    root.wallpaperPickerOpen = false
+    root.scheduleEditorOpen = false
+    controller.hide()
+  }
   function toggle() { opened ? close() : open() }
+
+  function wallpaperForPath(path) {
+    var list = root.service ? root.service.wallpaperList : []
+    for (var i = 0; i < list.length; i++)
+      if (list[i].path === path) return list[i]
+    return { path: path || "", thumb: path || "", name: Schedule.wallpaperName(path) }
+  }
+
+  function loadDraftTime(minutes) {
+    var value = Schedule.minute(minutes, 0)
+    var hour24 = Math.floor(value / 60)
+    var hour12 = hour24 % 12
+    root.draftHour = hour12 === 0 ? 12 : hour12
+    root.draftMinute = value % 60
+    root.draftPeriod = hour24 >= 12 ? "PM" : "AM"
+  }
+
+  function draftTime() {
+    return (root.draftHour % 12 + (root.draftPeriod === "PM" ? 12 : 0)) * 60
+      + root.draftMinute
+  }
+
+  function beginAddSchedule() {
+    var now = new Date()
+    root.editingScheduleIndex = -1
+    root.loadDraftTime(now.getHours() * 60 + now.getMinutes())
+    root.draftWallpaper = ""
+    root.scheduleEditorOpen = true
+  }
+
+  function beginEditSchedule(index) {
+    if (!root.service || index < 0 || index >= root.service.dailyEntries.length) return
+    var entry = root.service.dailyEntries[index]
+    root.editingScheduleIndex = index
+    root.loadDraftTime(entry.time)
+    root.draftWallpaper = entry.wallpaper
+    root.scheduleEditorOpen = true
+  }
+
+  function saveScheduleEditor() {
+    if (!root.service) return
+    if (root.service.saveDailyEntry(root.editingScheduleIndex, root.draftTime(),
+                                    root.draftWallpaper)) {
+      root.scheduleEditorOpen = false
+      root.editingScheduleIndex = -1
+    }
+  }
+
+  function chooseWallpaper(path) {
+    root.draftWallpaper = path
+    root.wallpaperPickerOpen = false
+  }
 
   function switchPanel(direction) {
     if (bar && typeof bar.switchPanelFrom === "function")
@@ -68,7 +129,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.wallpaperPickerOpen) root.wallpaperPickerOpen = false
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if ((text === "a" || text === "A") && root.service) root.service.applyNow()
@@ -213,6 +277,8 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             onChanged: function(value) {
+              root.scheduleEditorOpen = false
+              root.wallpaperPickerOpen = false
               if (root.service) root.service.updateSchedule({ scheduleType: value })
             }
           }
@@ -222,7 +288,7 @@ Panel {
             label: "Automatic switching"
             description: root.service
               && root.service.scheduleType === Schedule.SCHEDULE_DAILY
-                ? "Uses the selected wallpaper at each daily boundary."
+                ? "Uses the selected wallpaper at each scheduled daily time."
                 : "Cycles the active theme's wallpapers on an interval."
             checked: root.service ? root.service.enabled : false
             foreground: root.foreground
@@ -263,64 +329,295 @@ Panel {
             }
           }
 
-          RowLayout {
+          ColumnLayout {
             Layout.fillWidth: true
             spacing: Style.space(8)
             visible: root.service
               && root.service.scheduleType === Schedule.SCHEDULE_DAILY
 
-            Dropdown {
+            Text {
               Layout.fillWidth: true
-              label: "Day starts"
-              value: root.service ? String(root.service.dayStart) : "420"
-              options: root.timeOptions
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) {
-                if (root.service) root.service.updateSchedule({ dayStart: Number(value) })
+              visible: root.service && root.service.dailyEntries.length === 0
+              text: "No daily times yet. Add one for each wallpaper change."
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+              model: root.service ? root.service.dailyEntries : []
+
+              delegate: Rectangle {
+                id: scheduleRow
+                required property int index
+                required property var modelData
+                readonly property var wallpaper: root.wallpaperForPath(modelData.wallpaper)
+                Layout.fillWidth: true
+                Layout.preferredHeight: Style.space(64)
+                color: Util.alpha(root.foreground, 0.07)
+                border.color: Util.alpha(root.foreground, 0.18)
+                border.width: 1
+                radius: Style.space(4)
+
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.margins: Style.space(6)
+                  spacing: Style.space(8)
+
+                  Rectangle {
+                    Layout.preferredWidth: Style.space(72)
+                    Layout.fillHeight: true
+                    color: root.foreground
+                    clip: true
+
+                    Image {
+                      anchors.fill: parent
+                      source: root.opened && scheduleRow.wallpaper.thumb
+                        ? Util.fileUrl(scheduleRow.wallpaper.thumb) : ""
+                      sourceSize: Qt.size(240, 160)
+                      fillMode: Image.PreserveAspectCrop
+                      asynchronous: true
+                      cache: false
+                    }
+                  }
+
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: Schedule.clockLabel(scheduleRow.modelData.time)
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.body
+                    }
+                    Text {
+                      Layout.fillWidth: true
+                      text: scheduleRow.wallpaper.name
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+                  }
+
+                  Button {
+                    text: "Edit"
+                    bordered: true
+                    focusable: true
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    enabled: !root.scheduleEditorOpen
+                    onClicked: root.beginEditSchedule(scheduleRow.index)
+                  }
+
+                  Button {
+                    text: "Remove"
+                    bordered: true
+                    focusable: true
+                    foreground: root.urgent
+                    accent: root.urgent
+                    fontFamily: root.fontFamily
+                    enabled: !root.scheduleEditorOpen
+                    onClicked: {
+                      if (root.service) root.service.removeDailyEntry(scheduleRow.index)
+                      if (root.editingScheduleIndex === scheduleRow.index)
+                        root.scheduleEditorOpen = false
+                    }
+                  }
+                }
               }
             }
 
-            Dropdown {
+            Button {
               Layout.fillWidth: true
-              label: "Day wallpaper"
-              value: root.service ? root.service.dayWallpaper : ""
-              options: root.wallpaperOptions
+              visible: !root.scheduleEditorOpen
+              text: "Add schedule time"
+              iconText: "+"
+              bordered: true
+              focusable: true
               foreground: root.foreground
+              accent: Color.accent
               fontFamily: root.fontFamily
-              onChanged: function(value) {
-                if (root.service) root.service.updateSchedule({ dayWallpaper: value })
-              }
-            }
-          }
-
-          RowLayout {
-            Layout.fillWidth: true
-            spacing: Style.space(8)
-            visible: root.service
-              && root.service.scheduleType === Schedule.SCHEDULE_DAILY
-
-            Dropdown {
-              Layout.fillWidth: true
-              label: "Night starts"
-              value: root.service ? String(root.service.nightStart) : "1140"
-              options: root.timeOptions
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) {
-                if (root.service) root.service.updateSchedule({ nightStart: Number(value) })
-              }
+              onClicked: root.beginAddSchedule()
             }
 
-            Dropdown {
+            Rectangle {
               Layout.fillWidth: true
-              label: "Night wallpaper"
-              value: root.service ? root.service.nightWallpaper : ""
-              options: root.wallpaperOptions
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) {
-                if (root.service) root.service.updateSchedule({ nightWallpaper: value })
+              Layout.preferredHeight: editorContent.implicitHeight + Style.space(16)
+              visible: root.scheduleEditorOpen
+              color: Util.alpha(root.foreground, 0.07)
+              border.color: Util.alpha(root.foreground, 0.22)
+              border.width: 1
+              radius: Style.space(4)
+
+              ColumnLayout {
+                id: editorContent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: Style.space(8)
+                spacing: Style.space(8)
+
+                Text {
+                  Layout.fillWidth: true
+                  text: root.editingScheduleIndex >= 0 ? "Edit schedule time" : "Add schedule time"
+                  textFormat: Text.PlainText
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.space(6)
+
+                  NumberField {
+                    label: "Hour"
+                    value: root.draftHour
+                    from: 1
+                    to: 12
+                    fieldWidth: Style.space(82)
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    onModified: function(value) { root.draftHour = value }
+                  }
+
+                  NumberField {
+                    label: "Minute"
+                    value: root.draftMinute
+                    from: 0
+                    to: 59
+                    fieldWidth: Style.space(82)
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    onModified: function(value) { root.draftMinute = value }
+                  }
+
+                  ColumnLayout {
+                    spacing: Style.spacing.md
+
+                    Text {
+                      text: "Period"
+                      textFormat: Text.PlainText
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Button {
+                      text: root.draftPeriod
+                      bordered: true
+                      focusable: true
+                      foreground: root.foreground
+                      accent: Color.accent
+                      fontFamily: root.fontFamily
+                      onClicked: root.draftPeriod = root.draftPeriod === "AM" ? "PM" : "AM"
+                    }
+                  }
+
+                  Item { Layout.fillWidth: true }
+                }
+
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.space(8)
+
+                  Rectangle {
+                    Layout.preferredWidth: Style.space(88)
+                    Layout.preferredHeight: Style.space(56)
+                    color: root.foreground
+                    border.color: root.draftWallpaper ? Color.accent : root.dim
+                    border.width: root.draftWallpaper ? 2 : 1
+                    clip: true
+
+                    Image {
+                      anchors.fill: parent
+                      source: root.opened && root.draftWallpaperEntry.thumb
+                        ? Util.fileUrl(root.draftWallpaperEntry.thumb) : ""
+                      sourceSize: Qt.size(240, 160)
+                      fillMode: Image.PreserveAspectCrop
+                      asynchronous: true
+                      cache: false
+                    }
+
+                    Text {
+                      anchors.centerIn: parent
+                      visible: !root.draftWallpaper
+                      text: "No image"
+                      textFormat: Text.PlainText
+                      color: Color.background
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: Style.space(3)
+
+                    Text {
+                      Layout.fillWidth: true
+                      text: root.draftWallpaper
+                        ? root.draftWallpaperEntry.name : "Choose a wallpaper"
+                      textFormat: Text.PlainText
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+
+                    Button {
+                      Layout.fillWidth: true
+                      text: root.draftWallpaper ? "Change wallpaper" : "Choose wallpaper"
+                      bordered: true
+                      focusable: true
+                      foreground: root.foreground
+                      accent: Color.accent
+                      fontFamily: root.fontFamily
+                      onClicked: root.wallpaperPickerOpen = true
+                    }
+                  }
+                }
+
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: Style.space(8)
+
+                  Button {
+                    Layout.fillWidth: true
+                    text: "Cancel"
+                    bordered: true
+                    focusable: true
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    onClicked: {
+                      root.scheduleEditorOpen = false
+                      root.editingScheduleIndex = -1
+                    }
+                  }
+
+                  Button {
+                    Layout.fillWidth: true
+                    text: "Save time"
+                    bordered: true
+                    focusable: true
+                    enabled: root.draftWallpaper !== ""
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    onClicked: root.saveScheduleEditor()
+                  }
+                }
               }
             }
           }
@@ -357,7 +654,7 @@ Panel {
           Text {
             Layout.fillWidth: true
             text: root.service && root.service.scheduleType === Schedule.SCHEDULE_DAILY
-              ? "Manual choices remain active until the next day or night boundary."
+              ? "Manual choices remain active until the next scheduled time."
               : "Manual choices and scheduled changes share the same rotation. "
                 + (root.service && root.service.shuffle
                     ? "Shuffle plays every wallpaper once before repeating."
@@ -367,6 +664,101 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+        }
+      }
+
+      Rectangle {
+        id: wallpaperPicker
+        anchors.fill: parent
+        z: 100
+        visible: root.wallpaperPickerOpen
+        color: Util.alpha(Color.background, 0.98)
+
+        MouseArea {
+          anchors.fill: parent
+          acceptedButtons: Qt.AllButtons
+        }
+
+        ColumnLayout {
+          anchors.fill: parent
+          anchors.margins: Style.space(12)
+          spacing: Style.space(10)
+
+          RowLayout {
+            Layout.fillWidth: true
+
+            Text {
+              Layout.fillWidth: true
+              text: "Choose wallpaper"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+            }
+
+            Button {
+              text: "Close"
+              bordered: true
+              focusable: true
+              foreground: root.foreground
+              accent: Color.accent
+              fontFamily: root.fontFamily
+              onClicked: root.wallpaperPickerOpen = false
+            }
+          }
+
+          GridView {
+            id: wallpaperGrid
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            model: root.service ? root.service.wallpaperList : []
+            cellWidth: root.cellSize + root.cellSpacing
+            cellHeight: root.cellSize + root.cellSpacing
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            delegate: Item {
+              id: pickerCell
+              required property var modelData
+              width: wallpaperGrid.cellWidth
+              height: wallpaperGrid.cellHeight
+
+              Rectangle {
+                width: root.cellSize
+                height: root.cellSize
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: root.foreground
+                border.color: root.draftWallpaper === pickerCell.modelData.path
+                  ? Color.accent : root.dim
+                border.width: root.draftWallpaper === pickerCell.modelData.path ? 3 : 1
+                clip: true
+
+                Image {
+                  anchors.fill: parent
+                  anchors.margins: parent.border.width
+                  source: root.opened ? Util.fileUrl(pickerCell.modelData.thumb) : ""
+                  sourceSize: Qt.size(240, 240)
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                  cache: false
+                  smooth: true
+                }
+
+                ToolTip.visible: pickerMouse.containsMouse
+                ToolTip.text: pickerCell.modelData.name
+                ToolTip.delay: 400
+
+                MouseArea {
+                  id: pickerMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.chooseWallpaper(pickerCell.modelData.path)
+                }
+              }
+            }
           }
         }
       }

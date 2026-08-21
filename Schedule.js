@@ -9,10 +9,7 @@ var DEFAULTS = {
   cycle: [],
   cycleIndex: 0,
   cycleTheme: "",
-  dayWallpaper: "",
-  nightWallpaper: "",
-  dayStart: 420,
-  nightStart: 1140,
+  dailyEntries: [],
   lastHandledBoundary: ""
 }
 
@@ -48,11 +45,40 @@ function wallpaperPath(value) {
   return typeof value === "string" ? value.trim() : ""
 }
 
+function normalizeDailyEntries(source) {
+  var raw = Array.isArray(source.dailyEntries) ? source.dailyEntries.slice() : []
+
+  // Migrate the first fixed day/night implementation without requiring users
+  // to recreate their saved choices. The legacy keys disappear on next save.
+  if (raw.length === 0) {
+    var dayWallpaper = wallpaperPath(source.dayWallpaper)
+    var nightWallpaper = wallpaperPath(source.nightWallpaper)
+    if (dayWallpaper)
+      raw.push({ time: minute(source.dayStart, 420), wallpaper: dayWallpaper })
+    if (nightWallpaper)
+      raw.push({ time: minute(source.nightStart, 1140), wallpaper: nightWallpaper })
+  }
+
+  // One boundary per minute. When hand-edited config contains duplicates, the
+  // last valid entry wins, matching normal "latest edit wins" expectations.
+  var byTime = {}
+  for (var i = 0; i < raw.length; i++) {
+    var item = raw[i]
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue
+    var at = minute(item.time, -1)
+    var wallpaper = wallpaperPath(item.wallpaper)
+    if (at < 0 || !wallpaper) continue
+    byTime[String(at)] = { time: at, wallpaper: wallpaper }
+  }
+
+  var entries = []
+  for (var key in byTime) entries.push(byTime[key])
+  entries.sort(function(left, right) { return left.time - right.time })
+  return entries
+}
+
 function normalize(raw) {
   var source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
-  var dayStart = minute(source.dayStart, DEFAULTS.dayStart)
-  var nightStart = minute(source.nightStart, DEFAULTS.nightStart)
-  if (dayStart === nightStart) nightStart = (dayStart + 720) % 1440
   return {
     enabled: typeof source.enabled === "boolean" ? source.enabled : DEFAULTS.enabled,
     scheduleType: scheduleType(source.scheduleType),
@@ -62,10 +88,7 @@ function normalize(raw) {
     cycle: Array.isArray(source.cycle) ? source.cycle.slice() : [],
     cycleIndex: integer(source.cycleIndex, DEFAULTS.cycleIndex),
     cycleTheme: typeof source.cycleTheme === "string" ? source.cycleTheme : "",
-    dayWallpaper: wallpaperPath(source.dayWallpaper),
-    nightWallpaper: wallpaperPath(source.nightWallpaper),
-    dayStart: dayStart,
-    nightStart: nightStart,
+    dailyEntries: normalizeDailyEntries(source),
     lastHandledBoundary: typeof source.lastHandledBoundary === "string"
       ? source.lastHandledBoundary : ""
   }
@@ -108,25 +131,47 @@ function timeLabel(minutes) {
   return pad(Math.floor(value / 60)) + ":" + pad(value % 60)
 }
 
+function clockLabel(minutes) {
+  var value = minute(minutes, 0)
+  var hour = Math.floor(value / 60)
+  var suffix = hour >= 12 ? "PM" : "AM"
+  var displayHour = hour % 12
+  if (displayHour === 0) displayHour = 12
+  return displayHour + ":" + pad(value % 60) + " " + suffix
+}
+
 function minuteOfDay(date) {
   return date.getHours() * 60 + date.getMinutes()
 }
 
-function isDayAt(minutes, dayStart, nightStart) {
-  if (dayStart < nightStart) return minutes >= dayStart && minutes < nightStart
-  return minutes >= dayStart || minutes < nightStart
-}
-
-function periodAt(date, config) {
+function activeBoundary(date, config) {
   var normalized = normalize(config)
-  return isDayAt(minuteOfDay(date), normalized.dayStart, normalized.nightStart)
-    ? "day" : "night"
+  var entries = normalized.dailyEntries
+  if (entries.length === 0) return null
+
+  var now = minuteOfDay(date)
+  var index = -1
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i].time <= now) index = i
+    else break
+  }
+
+  var dayDelta = 0
+  if (index < 0) {
+    index = entries.length - 1
+    dayDelta = -1
+  }
+  var entry = entries[index]
+  return {
+    date: dateAtMinute(date, entry.time, dayDelta),
+    entry: entry,
+    index: index
+  }
 }
 
 function desiredWallpaper(date, config) {
-  var normalized = normalize(config)
-  return periodAt(date, normalized) === "day"
-    ? normalized.dayWallpaper : normalized.nightWallpaper
+  var active = activeBoundary(date, config)
+  return active ? active.entry.wallpaper : ""
 }
 
 function localDateKey(date) {
@@ -138,53 +183,39 @@ function dateAtMinute(date, minutes, dayDelta) {
                   Math.floor(minutes / 60), minutes % 60, 0, 0)
 }
 
-// Return the boundary that opened the current day/night period. Keeping this
-// token stable across midnight prevents a manual override from being undone
-// before the next configured boundary.
-function boundaryInfo(date, config) {
-  var normalized = normalize(config)
-  var period = periodAt(date, normalized)
-  var start = period === "day" ? normalized.dayStart : normalized.nightStart
-  var boundary = dateAtMinute(date, start, 0)
-  if (boundary.getTime() > date.getTime()) boundary = dateAtMinute(date, start, -1)
-  return { date: boundary, period: period, start: start }
+function boundaryToken(date, config) {
+  var active = activeBoundary(date, config)
+  return active ? localDateKey(active.date) + "@" + active.entry.time : ""
 }
 
-function boundaryToken(date, config) {
-  var info = boundaryInfo(date, config)
-  return localDateKey(info.date) + "@" + info.period + "@" + info.start
+function upcomingBoundary(date, config) {
+  var normalized = normalize(config)
+  var entries = normalized.dailyEntries
+  if (entries.length === 0) return null
+
+  var now = minuteOfDay(date)
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i].time > now)
+      return { date: dateAtMinute(date, entries[i].time, 0), entry: entries[i], index: i }
+  }
+  return { date: dateAtMinute(date, entries[0].time, 1), entry: entries[0], index: 0 }
 }
 
 function nextBoundary(date, config) {
-  var normalized = normalize(config)
-  var period = periodAt(date, normalized)
-  var start = period === "day" ? normalized.nightStart : normalized.dayStart
-  var next = dateAtMinute(date, start, 0)
-  if (next.getTime() <= date.getTime()) next = dateAtMinute(date, start, 1)
-  return next
+  var upcoming = upcomingBoundary(date, config)
+  return upcoming ? upcoming.date : null
 }
 
 function nextSwitchText(date, config) {
   var normalized = normalize(config)
   if (!normalized.enabled) return "Automatic switching is off"
-  if (!normalized.dayWallpaper || !normalized.nightWallpaper)
-    return "Choose day and night wallpapers"
+  if (normalized.dailyEntries.length === 0) return "Add a daily schedule time"
 
-  var next = nextBoundary(date, normalized)
-  var nextWallpaper = periodAt(date, normalized) === "day"
-    ? normalized.nightWallpaper : normalized.dayWallpaper
-  var prefix = localDateKey(next) === localDateKey(date) ? "Today at " : "Tomorrow at "
-  return prefix + timeLabel(next.getHours() * 60 + next.getMinutes()) + " · "
-    + wallpaperName(nextWallpaper)
-}
-
-function timeOptions(step) {
-  var size = integer(step, 15)
-  if (size <= 0 || size > 720) size = 15
-  var options = []
-  for (var value = 0; value < 1440; value += size)
-    options.push({ value: String(value), label: timeLabel(value) })
-  return options
+  var upcoming = upcomingBoundary(date, normalized)
+  var prefix = localDateKey(upcoming.date) === localDateKey(date)
+    ? "Today at " : "Tomorrow at "
+  return prefix + clockLabel(upcoming.entry.time) + " · "
+    + wallpaperName(upcoming.entry.wallpaper)
 }
 
 function scheduleTypeOptions() {
@@ -192,18 +223,6 @@ function scheduleTypeOptions() {
     { value: SCHEDULE_INTERVAL, label: "Interval" },
     { value: SCHEDULE_DAILY, label: "Daily times" }
   ]
-}
-
-function wallpaperOptions(catalog) {
-  var values = [{ value: "", label: "Choose wallpaper" }]
-  var entries = Array.isArray(catalog) ? catalog : []
-  for (var i = 0; i < entries.length; i++) {
-    var entry = entries[i] || {}
-    var path = wallpaperPath(entry.path)
-    if (!path) continue
-    values.push({ value: path, label: entry.name || wallpaperName(path) })
-  }
-  return values
 }
 
 // Fisher-Yates shuffle. `rng` is optional to support deterministic tests.
