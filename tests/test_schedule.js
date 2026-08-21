@@ -6,6 +6,7 @@ const vm = require("vm");
 
 const source = fs.readFileSync(path.join(__dirname, "..", "Schedule.js"), "utf8")
   .replace(/^\.pragma library\s*/, "");
+const serviceSource = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8");
 const Schedule = { Math, Date, Number, String, Array, Object, JSON, isFinite };
 vm.createContext(Schedule);
 vm.runInContext(source, Schedule, { filename: "Schedule.js" });
@@ -148,6 +149,10 @@ eq("existing interval becomes due", Schedule.isDue(interval, 1000 + 30 * 60000),
 eq("existing sequential rotation still advances",
   Schedule.pickNext(interval, [dayPath, nightPath], dayPath, "nord").path,
   nightPath);
+eq("QML stores the current timestamp without 32-bit truncation",
+  /property\s+real\s+nowEpoch\s*:/.test(serviceSource), true);
+eq("QML stores the previous interval timestamp without 32-bit truncation",
+  /property\s+real\s+lastChangeEpoch\s*:/.test(serviceSource), true);
 
 if (failures) process.exit(1);
 console.log(`ok - ${checks} schedule checks`);

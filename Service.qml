@@ -21,7 +21,9 @@ Item {
   property string scheduleType: Schedule.DEFAULTS.scheduleType
   property int intervalMinutes: 30
   property string mode: Schedule.DEFAULTS.mode
-  property int lastChangeEpoch: Schedule.DEFAULTS.lastChangeEpoch
+  // JavaScript timestamps exceed QML's 32-bit int range. Keep them as real
+  // values so Date.now() is not truncated into a date near the Unix epoch.
+  property real lastChangeEpoch: Schedule.DEFAULTS.lastChangeEpoch
   property var cycle: []
   property int cycleIndex: 0
   property string cycleTheme: ""
@@ -34,7 +36,7 @@ Item {
   property var catalogPaths: []
   property var wallpaperList: []
   property string currentWallpaper: ""
-  property int nowEpoch: 0
+  property real nowEpoch: 0
   property bool catalogReady: false
   property bool currentReady: false
 
